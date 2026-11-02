@@ -76,7 +76,7 @@ def get_download_data(package_name):
 
 def get_vulnerabilities_raw(package_name):
     """
-    Queries the native GitHub Advisories API instead of OSV.
+    Queries the native GitHub Advisories API.
     """
     url = f"https://api.github.com/advisories?ecosystem=npm&affects={package_name}"
     headers = {"Accept": "application/vnd.github.v3+json"}
