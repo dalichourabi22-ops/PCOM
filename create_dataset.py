@@ -1,3 +1,4 @@
+import json
 import os
 from dotenv import load_dotenv
 import requests
@@ -13,15 +14,42 @@ import re
 load_dotenv()
 GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN") 
 
-PACKAGES_TO_PROCESS =[
-    "react", "express", "lodash", "chalk", "commander", 
-    "moment", "axios", "debug", "tslib", "uuid", "fs-extra", 
-    "next", "yaml", "typescript", "mongodb", "mocha", "svelte"
-    ]
+PACKAGES_TO_PROCESS =["axios",
+    # Web-Frameworks und Server
+    "@nestjs/core", "@nestjs/common", "hono", "h3", "nuxt", "@sveltejs/kit", "astro",
+    "react-router", "remix", "@remix-run/node", "vite", "webpack", "webpack-dev-server",
+    "esbuild", "rollup",
+    # Express-Ökosystem und HTTP
+    "cookie", "express-session", "multer", "serve-static", "send", "path-to-regexp", "cors",
+    "helmet", "http-proxy-middleware", "follow-redirects", "form-data", "undici", "node-fetch",
+    "tough-cookie", "socket.io-parser", "engine.io",
+    # Security, Crypto, Auth
+    "jose", "passport", "bcrypt", "crypto-js", "elliptic", "jws", "@octokit/request",
+    "nodemailer", "cross-spawn",
+    # Parsing, Templates, Sanitizing
+    "marked", "markdown-it", "js-yaml", "xml2js", "fast-xml-parser", "handlebars", "ejs", "pug",
+    "nunjucks", "dompurify", "sanitize-html", "validator", "micromatch", "braces", "brace-expansion",
+    # Archive, Dateien, Medien
+    "tar", "tar-fs", "adm-zip", "jszip", "unzipper", "sharp", "pdfjs-dist", "jspdf",
+    # Datenbank
+    "knex", "typeorm", "@prisma/client", "mysql2", "sqlite3", "better-sqlite3", "ioredis",
+    "graphql", "@apollo/server",
+    # Tooling und Apps
+    "electron", "playwright", "puppeteer", "prettier", "eslint", "jest", "vitest",
+    "@babel/core", "@babel/traverse",
+    # Utilities und Libraries
+    "dayjs", "moment", "zod", "rxjs", "immer", "nanoid", "ora", "execa", "pino",
+    "winston", "dotenv", "yargs", "zustand", "swr", "@tanstack/react-query", "tailwindcss",
+    "postcss", "sass", "clsx", "underscore", "async",
+]
+
 
 # ==========================================
 # FUNCTIONS
 # ==========================================
+def del_duplicates(json_data):
+    return [
+        item for item in json_data if not item.get("summary", "").lower().startswith("duplicate")]
 
 def get_month_map():
     """
@@ -78,7 +106,7 @@ def get_vulnerabilities_raw(package_name):
     """
     Queries the native GitHub Advisories API.
     """
-    url = f"https://api.github.com/advisories?ecosystem=npm&affects={package_name}"
+    url = f"https://api.github.com/advisories?ecosystem=npm&affects={package_name}&per_page=100"
     headers = {"Accept": "application/vnd.github.v3+json"}
     if GITHUB_TOKEN:
         headers["Authorization"] = f"token {GITHUB_TOKEN}"
@@ -90,7 +118,7 @@ def get_vulnerabilities_raw(package_name):
         if response.status_code != 200: 
             break
             
-        advisories = response.json()
+        advisories = del_duplicates(response.json())
         for adv in advisories:
             vuln_id = adv.get("ghsa_id", "")
             if not vuln_id: continue
@@ -112,45 +140,50 @@ def get_vulnerabilities_raw(package_name):
 def assign_vulnerability_data(vulns, published_at_str):
     """Calculates historical, target (90d), and monthly GHSAs for a specific version."""
     severities = ['LOW', 'MODERATE', 'HIGH', 'CRITICAL', 'UNKNOWN']
+    valid_severities = {'low', 'moderate', 'high', 'critical'}
+    api_to_schema = {'medium': 'moderate'}
+      # Skip duplicate advisories
     vuln_data = {}
     for sev in severities:
         s_lower = sev.lower()
         vuln_data[f"ghsa_{s_lower}_count"] = 0
         vuln_data[f"target_ghsa_{s_lower}_count_90d"] = 0
-        for i in range(12): 
+        for i in range(12):
             vuln_data[f"ghsa_{s_lower}_count_M{i}"] = 0
 
     if not published_at_str: return vuln_data
-    
+
     try:
-        prediction_date = datetime.fromisoformat(published_at_str.replace('Z', '+00:00'))
+        start="2026-07-01T00:00:00+00:00"
+        prediction_date = datetime.fromisoformat(start.replace('Z', '+00:00'))
     except Exception:
         return vuln_data
-        
+
     target_end_date = prediction_date + timedelta(days=90)
     boundary_date = datetime.fromisoformat("2026-07-01T00:00:00+00:00")
     month_map = get_month_map()
-    
+
     for v in vulns:
         pub_date_str = v.get("published")
         if not pub_date_str: continue
         try:
             v_date = datetime.fromisoformat(pub_date_str.replace('Z', '+00:00'))
         except Exception: continue
-            
-        sev = v["severity"].lower()
-        if sev not in ['low', 'moderate', 'high', 'critical']: sev = 'unknown'
-            
+
+        sev = (v.get("severity") or "unknown").lower()
+        sev = api_to_schema.get(sev, sev)          # medium -> moderate
+        if sev not in valid_severities: sev = 'unknown'
+
         if prediction_date <= v_date <= target_end_date:
             vuln_data[f"target_ghsa_{sev}_count_90d"] += 1
-            
+
         if v_date < boundary_date:
             vuln_data[f"ghsa_{sev}_count"] += 1
-            
+
         year_month = v_date.strftime("%Y-%m")
         if year_month in month_map:
             vuln_data[f"ghsa_{sev}_count_{month_map[year_month]}"] += 1
-            
+
     return vuln_data
 
 def extract_github_owner_repo(npm_metadata):
@@ -307,6 +340,7 @@ def get_package_versions_records(package_name):
         record.update(downloads_data)
         record.update(release_counts)
         record.update(github_data)
+            
         record.update(assign_vulnerability_data(raw_vulns, time_data.get(v_name)))
         
         records.append(record)
@@ -314,14 +348,64 @@ def get_package_versions_records(package_name):
     return records
 
 if __name__ == "__main__":
-    all_records = []
+    output_filename = "training_data.csv"
+
+    # Bereits gespeicherte Paketversionen laden, damit keine Duplikate entstehen.
+    existing_purls = set()
+    if os.path.exists(output_filename) and os.path.getsize(output_filename) > 0:
+        existing_purls = set(
+            pd.read_csv(output_filename, usecols=["purl"])["purl"].dropna().astype(str)
+        )
+
+    total_added = 0
+    total_skipped = 0
+
     for pkg in PACKAGES_TO_PROCESS:
-        print(f"Processing package: {pkg}...")
-        package_records = get_package_versions_records(pkg)
-        all_records.extend(package_records)
-            
-    if all_records:
-        df = pd.DataFrame(all_records)
-        output_filename = "initial_training_data.csv"
-        df.to_csv(output_filename, index=False)
-        print(f"\nSuccess! Generated {len(all_records)} records and saved to {output_filename}.")
+        print(f"\nProcessing package: {pkg}...")
+
+        try:
+            # Immer nur ein Paket auf einmal verarbeiten.
+            package_records = get_package_versions_records(pkg)
+
+            new_records = []
+            for record in package_records:
+                purl = record["purl"]
+
+                if purl in existing_purls:
+                    total_skipped += 1
+                    continue
+
+                new_records.append(record)
+                existing_purls.add(purl)
+
+            # Direkt nach der Verarbeitung dieses Pakets in die CSV schreiben.
+            if new_records:
+                file_has_content = (
+                    os.path.exists(output_filename)
+                    and os.path.getsize(output_filename) > 0
+                )
+
+                pd.DataFrame(new_records).to_csv(
+                    output_filename,
+                    mode="a",
+                    header=not file_has_content,
+                    index=False
+                )
+
+                total_added += len(new_records)
+                print(
+                    f"Saved {len(new_records)} new records for '{pkg}' "
+                    f"to {output_filename}."
+                )
+            else:
+                print(f"No new records for '{pkg}'.")
+
+        except Exception as e:
+            # Fehler in einem Paket stoppen nicht die Verarbeitung der übrigen Pakete.
+            print(f"Error while processing '{pkg}': {e}")
+            continue
+
+    print(
+        f"\nFinished! Added {total_added} new records to {output_filename}; "
+        f"skipped {total_skipped} existing records."
+    )
