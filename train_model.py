@@ -15,7 +15,7 @@ def build_model(base_score: float) -> xgb.XGBRegressor:
         objective="count:poisson",
         n_estimators=1000,
         max_depth=4,
-        learning_rate=0.04,
+        learning_rate=0.03,
         subsample=0.8,
         colsample_bytree=0.8,
         base_score=base_score,
